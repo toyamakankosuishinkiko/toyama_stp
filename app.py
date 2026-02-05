@@ -7,6 +7,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.fonts import addMapping
+import urllib.request
+import os
 
 # ページ設定
 st.set_page_config(
@@ -14,6 +24,38 @@ st.set_page_config(
     page_icon="🏔️",
     layout="wide"
 )
+
+# ============================================
+# 日本語フォント設定
+# ============================================
+
+@st.cache_resource
+def setup_japanese_font():
+    """日本語フォントのセットアップ"""
+    font_url = "https://moji.or.jp/wp-content/ipafont/IPAexfont/IPAexfont00401.zip"
+    font_path = "/tmp/ipaexg.ttf"
+    
+    if not os.path.exists(font_path):
+        try:
+            import zipfile
+            zip_path = "/tmp/ipafont.zip"
+            urllib.request.urlretrieve(font_url, zip_path)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall("/tmp/")
+            # フォントファイルを探す
+            for root, dirs, files in os.walk("/tmp/"):
+                for file in files:
+                    if file == "ipaexg.ttf":
+                        os.rename(os.path.join(root, file), font_path)
+                        break
+        except Exception as e:
+            st.warning(f"日本語フォントの取得に失敗しました: {e}")
+            return None
+    
+    if os.path.exists(font_path):
+        pdfmetrics.registerFont(TTFont('IPAexGothic', font_path))
+        return 'IPAexGothic'
+    return None
 
 # ============================================
 # データ読み込みとマッピング定義
@@ -48,6 +90,9 @@ COMPANION_MAP = {
     3: '大人の家族', 4: '夫婦', 5: 'カップル',
     6: '友人・知人', 7: '団体旅行', 8: 'ひとり', 0: 'その他'
 }
+
+AGE_MAP = {10: '10代', 20: '20代', 30: '30代', 40: '40代',
+           50: '50代', 60: '60代', 70: '70代', 80: '80代以上'}
 
 INCOME_MAP = {
     100: '100万円未満', 150: '100-200万円', 250: '200-300万円',
@@ -98,6 +143,20 @@ def get_all_target_data(df):
     df_with_region['居住地名'] = df_with_region['居住地_code'].map(TARGET_REGIONS)
     return df_with_region[df_with_region['居住地名'].notna()]
 
+def get_age_label(data):
+    """年代のラベルを取得（最頻値を使用）"""
+    if len(data) == 0:
+        return '不明'
+    
+    # 年代を10の位に丸める
+    ages_rounded = (data['年代'] // 10) * 10
+    age_mode = ages_rounded.mode()
+    
+    if len(age_mode) > 0:
+        age_value = int(age_mode.iloc[0])
+        return AGE_MAP.get(age_value, f'{age_value}代')
+    return '不明'
+
 def calc_basic_stats(region_data, all_data):
     """基本属性の集計"""
     def calc_stats(data):
@@ -124,11 +183,14 @@ def calc_basic_stats(region_data, all_data):
         companion_mode = data['同行者'].mode()
         companion_top = COMPANION_MAP.get(companion_mode.iloc[0], '不明') if len(companion_mode) > 0 else '不明'
         
+        # 年代は最頻値を使用
+        age_label = get_age_label(data)
+        
         return {
             'サンプル数': n,
             '男性比率(%)': round((data['性別'] == 0).mean() * 100, 1),
             '女性比率(%)': round((data['性別'] == 1).mean() * 100, 1),
-            '平均年代': f"{int(data['年代'].mean())}代",
+            '最多年代': age_label,
             '最多同行者': companion_top,
             '平均宿泊数（県内）': round(avg_stay, 1),
             '平均世帯年収帯': income_label
@@ -150,7 +212,7 @@ def calc_travel_stats(region_data, all_data):
         
         return {
             '宿泊率(%)': round((stay_data > 0).mean() * 100, 1),
-            '平均宿泊数': round(stay_data[stay_data > 0].mean(), 1) if (stay_data > 0).any() else 0,
+            '平均宿泊数': round(stay_data[stay_data > 0].mean(), 1) if (stay_data > 0).any() else 0.0,
             '初訪問率(%)': round((data['来県回数'] == 1).mean() * 100, 1),
             'リピーター率(%)': round((data['来県回数'] >= 2).mean() * 100, 1),
             'ヘビーリピーター率(%)': round((data['来県回数'] >= 6).mean() * 100, 1)
@@ -268,7 +330,7 @@ def calc_satisfaction_stats(region_data, all_data):
         results = {}
         for col in sat_cols:
             name = col.replace('満足度（', '').replace('）', '')
-            results[f'{name}満足度'] = round(data[col].mean(), 2)
+            results[f'{name}満足度'] = round(data[col].mean(), 1)
         
         # NPSスコア
         nps_data = data['NPS']
@@ -276,7 +338,7 @@ def calc_satisfaction_stats(region_data, all_data):
         detractors = (nps_data <= 6).sum() / len(nps_data) * 100
         results['NPSスコア'] = round(promoters - detractors, 1)
         
-        results['再来訪意向'] = round(data['再来訪意向'].mean(), 2)
+        results['再来訪意向'] = round(data['再来訪意向'].mean(), 1)
         
         return results
     
@@ -309,7 +371,7 @@ def calc_seafood_stats(df, region_data, all_data):
                         impressed_count = data[impressed_col].sum()
                         conversion_rates[seafood] = round((impressed_count / eaten_count) * 100, 1)
                     else:
-                        conversion_rates[seafood] = 0
+                        conversion_rates[seafood] = 0.0
         
         return eaten_rates, conversion_rates
     
@@ -371,6 +433,7 @@ def display_comparison_table(title, region_stats, all_stats, region_name):
     
     if data:
         df_display = pd.DataFrame(data)
+        df_display.index = df_display.index + 1  # 1から始まるインデックス
         st.table(df_display)
 
 def display_ranking_table(title, region_stats, all_stats, region_name, top_n=10):
@@ -394,119 +457,212 @@ def display_ranking_table(title, region_stats, all_stats, region_name, top_n=10)
 # PDF生成関数
 # ============================================
 
-def generate_pdf_content(region_name, selected_sections, results):
-    """PDFダウンロード用のテキストコンテンツを生成"""
-    lines = []
-    lines.append("=" * 60)
-    lines.append(f"富山県観光 セグメント分析レポート")
-    lines.append(f"対象地域: {region_name}")
-    lines.append("=" * 60)
-    lines.append("")
+def generate_pdf(region_name, selected_sections, results):
+    """PDF形式でレポートを生成"""
+    buffer = BytesIO()
     
+    # フォント設定
+    font_name = setup_japanese_font()
+    if font_name is None:
+        font_name = 'Helvetica'
+    
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=20*mm,
+        leftMargin=20*mm,
+        topMargin=20*mm,
+        bottomMargin=20*mm
+    )
+    
+    elements = []
+    
+    # スタイル設定
+    styles = getSampleStyleSheet()
+    
+    if font_name == 'IPAexGothic':
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontName='IPAexGothic',
+            fontSize=18,
+            spaceAfter=12
+        )
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontName='IPAexGothic',
+            fontSize=14,
+            spaceAfter=8
+        )
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontName='IPAexGothic',
+            fontSize=10
+        )
+    else:
+        title_style = styles['Heading1']
+        heading_style = styles['Heading2']
+        normal_style = styles['Normal']
+    
+    # タイトル
+    elements.append(Paragraph(f"富山県観光 セグメント分析レポート", title_style))
+    elements.append(Paragraph(f"対象地域: {region_name}", normal_style))
+    elements.append(Spacer(1, 12))
+    
+    def create_table(data, col_widths=None):
+        """テーブルを作成"""
+        table = Table(data, colWidths=col_widths)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, -1), font_name if font_name == 'IPAexGothic' else 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        return table
+    
+    # 各セクションの出力
     for section in selected_sections:
         if section == '基本属性' and 'basic' in results:
             region_stats, all_stats = results['basic']
-            lines.append("■ 基本属性")
-            lines.append("-" * 40)
-            lines.append(f"{'指標':<20} {region_name:<15} {'全体':<15}")
+            elements.append(Paragraph("■ 基本属性", heading_style))
+            
+            data = [['指標', region_name, '全体']]
             for key in region_stats.keys():
-                lines.append(f"{key:<20} {str(region_stats.get(key, '-')):<15} {str(all_stats.get(key, '-')):<15}")
-            lines.append("")
+                data.append([key, str(region_stats.get(key, '-')), str(all_stats.get(key, '-'))])
+            
+            elements.append(create_table(data, col_widths=[60*mm, 45*mm, 45*mm]))
+            elements.append(Spacer(1, 12))
         
         elif section == '旅行行動' and 'travel' in results:
             region_stats, all_stats = results['travel']
-            lines.append("■ 旅行行動")
-            lines.append("-" * 40)
-            lines.append(f"{'指標':<25} {region_name:<15} {'全体':<15}")
+            elements.append(Paragraph("■ 旅行行動", heading_style))
+            
+            data = [['指標', region_name, '全体']]
             for key in region_stats.keys():
-                lines.append(f"{key:<25} {str(region_stats.get(key, '-')):<15} {str(all_stats.get(key, '-')):<15}")
-            lines.append("")
+                data.append([key, str(region_stats.get(key, '-')), str(all_stats.get(key, '-'))])
+            
+            elements.append(create_table(data, col_widths=[60*mm, 45*mm, 45*mm]))
+            elements.append(Spacer(1, 12))
         
         elif section == '交通手段' and 'transport' in results:
-            lines.append("■ 交通手段")
-            lines.append("-" * 40)
+            elements.append(Paragraph("■ 交通手段", heading_style))
             
             for transport_type in ['1次交通', '県内交通']:
                 region_stats, all_stats = results['transport'][transport_type]
-                lines.append(f"\n【{transport_type}】")
-                lines.append(f"{'交通手段':<25} {region_name}(%)<15 {'全体(%)':<15}")
+                elements.append(Paragraph(f"【{transport_type}】", normal_style))
+                
+                data = [['交通手段', f'{region_name}(%)', '全体(%)']]
                 for key, value in sorted(region_stats.items(), key=lambda x: x[1], reverse=True)[:8]:
-                    lines.append(f"{key:<25} {value:<15} {all_stats.get(key, '-'):<15}")
-            lines.append("")
+                    data.append([key, str(value), str(all_stats.get(key, '-'))])
+                
+                elements.append(create_table(data, col_widths=[60*mm, 45*mm, 45*mm]))
+                elements.append(Spacer(1, 8))
+            
+            elements.append(Spacer(1, 12))
         
         elif section == '訪問目的' and 'purpose' in results:
             region_stats, all_stats = results['purpose']
-            lines.append("■ 訪問目的 TOP10")
-            lines.append("-" * 40)
-            lines.append(f"{'順位':<5} {'訪問目的':<30} {region_name}(%)<12 {'全体(%)':<12}")
+            elements.append(Paragraph("■ 訪問目的 TOP10", heading_style))
+            
+            data = [['順位', '訪問目的', f'{region_name}(%)', '全体(%)']]
             for i, (key, value) in enumerate(list(region_stats.items())[:10], 1):
-                lines.append(f"{i:<5} {key:<30} {value:<12} {all_stats.get(key, '-'):<12}")
-            lines.append("")
+                data.append([str(i), key, str(value), str(all_stats.get(key, '-'))])
+            
+            elements.append(create_table(data, col_widths=[15*mm, 70*mm, 35*mm, 35*mm]))
+            elements.append(Spacer(1, 12))
         
         elif section == '情報源' and 'info_source' in results:
-            lines.append("■ 情報源")
-            lines.append("-" * 40)
+            elements.append(Paragraph("■ 情報源", heading_style))
             
             for source_type in ['デジタル', '非デジタル']:
                 region_stats, all_stats = results['info_source'][source_type]
-                lines.append(f"\n【{source_type}】")
-                lines.append(f"{'順位':<5} {'情報源':<25} {region_name}(%)<12 {'全体(%)':<12}")
+                elements.append(Paragraph(f"【{source_type}】", normal_style))
+                
+                data = [['順位', '情報源', f'{region_name}(%)', '全体(%)']]
                 for i, (key, value) in enumerate(list(region_stats.items())[:8], 1):
-                    lines.append(f"{i:<5} {key:<25} {value:<12} {all_stats.get(key, '-'):<12}")
-            lines.append("")
+                    data.append([str(i), key, str(value), str(all_stats.get(key, '-'))])
+                
+                elements.append(create_table(data, col_widths=[15*mm, 70*mm, 35*mm, 35*mm]))
+                elements.append(Spacer(1, 8))
+            
+            elements.append(Spacer(1, 12))
         
         elif section == '訪問先' and 'visited' in results:
             region_stats, all_stats = results['visited']
-            lines.append("■ 訪問先 TOP10")
-            lines.append("-" * 40)
-            lines.append(f"{'順位':<5} {'訪問先':<25} {region_name}(%)<12 {'全体(%)':<12}")
+            elements.append(Paragraph("■ 訪問先 TOP10", heading_style))
+            
+            data = [['順位', '訪問先', f'{region_name}(%)', '全体(%)']]
             for i, (key, value) in enumerate(list(region_stats.items())[:10], 1):
-                lines.append(f"{i:<5} {key:<25} {value:<12} {all_stats.get(key, '-'):<12}")
-            lines.append("")
+                data.append([str(i), key, str(value), str(all_stats.get(key, '-'))])
+            
+            elements.append(create_table(data, col_widths=[15*mm, 70*mm, 35*mm, 35*mm]))
+            elements.append(Spacer(1, 12))
         
         elif section == '消費額' and 'expense' in results:
             region_stats, all_stats = results['expense']
-            lines.append("■ 消費額")
-            lines.append("-" * 40)
-            lines.append(f"{'項目':<20} {region_name:<15} {'全体':<15}")
+            elements.append(Paragraph("■ 消費額", heading_style))
+            
+            data = [['項目', region_name, '全体']]
             for key in region_stats.keys():
-                lines.append(f"{key:<20} {str(region_stats.get(key, '-')):<15} {str(all_stats.get(key, '-')):<15}")
-            lines.append("")
+                data.append([key, str(region_stats.get(key, '-')), str(all_stats.get(key, '-'))])
+            
+            elements.append(create_table(data, col_widths=[60*mm, 45*mm, 45*mm]))
+            elements.append(Spacer(1, 12))
         
         elif section == '満足度・NPS' and 'satisfaction' in results:
             region_stats, all_stats = results['satisfaction']
-            lines.append("■ 満足度・NPS")
-            lines.append("-" * 40)
-            lines.append(f"{'項目':<20} {region_name:<15} {'全体':<15}")
+            elements.append(Paragraph("■ 満足度・NPS", heading_style))
+            
+            data = [['項目', region_name, '全体']]
             for key in region_stats.keys():
-                lines.append(f"{key:<20} {str(region_stats.get(key, '-')):<15} {str(all_stats.get(key, '-')):<15}")
-            lines.append("")
+                data.append([key, str(region_stats.get(key, '-')), str(all_stats.get(key, '-'))])
+            
+            elements.append(create_table(data, col_widths=[60*mm, 45*mm, 45*mm]))
+            elements.append(Spacer(1, 12))
         
         elif section == '海の幸' and 'seafood' in results:
-            lines.append("■ 海の幸")
-            lines.append("-" * 40)
+            elements.append(Paragraph("■ 海の幸", heading_style))
             
             for stat_type in ['喫食率', '感動率']:
                 region_stats, all_stats = results['seafood'][stat_type]
-                lines.append(f"\n【{stat_type}】")
-                lines.append(f"{'海の幸':<15} {region_name}(%)<12 {'全体(%)':<12}")
+                elements.append(Paragraph(f"【{stat_type}】", normal_style))
+                
+                data = [['海の幸', f'{region_name}(%)', '全体(%)']]
                 for key in region_stats.keys():
-                    lines.append(f"{key:<15} {region_stats.get(key, '-'):<12} {all_stats.get(key, '-'):<12}")
-            lines.append("")
+                    data.append([key, str(region_stats.get(key, '-')), str(all_stats.get(key, '-'))])
+                
+                elements.append(create_table(data, col_widths=[50*mm, 50*mm, 50*mm]))
+                elements.append(Spacer(1, 8))
+            
+            elements.append(Spacer(1, 12))
         
         elif section == '寿司・ます寿し' and 'sushi' in results:
-            lines.append("■ 寿司・ます寿し")
-            lines.append("-" * 40)
+            elements.append(Paragraph("■ 寿司・ます寿し", heading_style))
             
             for sushi_type in ['寿司', 'ます寿し']:
                 region_stats, all_stats = results['sushi'][sushi_type]
-                lines.append(f"\n【{sushi_type}】")
-                lines.append(f"{'項目':<30} {region_name}(%)<12 {'全体(%)':<12}")
+                elements.append(Paragraph(f"【{sushi_type}】", normal_style))
+                
+                data = [['項目', f'{region_name}(%)', '全体(%)']]
                 for key in region_stats.keys():
-                    lines.append(f"{key:<30} {region_stats.get(key, '-'):<12} {all_stats.get(key, '-'):<12}")
-            lines.append("")
+                    data.append([key, str(region_stats.get(key, '-')), str(all_stats.get(key, '-'))])
+                
+                elements.append(create_table(data, col_widths=[70*mm, 40*mm, 40*mm]))
+                elements.append(Spacer(1, 8))
+            
+            elements.append(Spacer(1, 12))
     
-    return "\n".join(lines)
+    doc.build(elements)
+    buffer.seek(0)
+    
+    return buffer
 
 # ============================================
 # メインアプリ
@@ -588,16 +744,16 @@ def main():
                     st.markdown("**【1次交通】**")
                     region_stats, all_stats = transport_results['1次交通']
                     data = []
-                    for key, value in sorted(region_stats.items(), key=lambda x: x[1], reverse=True)[:8]:
-                        data.append({'交通手段': key, f'{selected_region}(%)': value, '全体(%)': all_stats.get(key, '-')})
+                    for i, (key, value) in enumerate(sorted(region_stats.items(), key=lambda x: x[1], reverse=True)[:8], 1):
+                        data.append({'順位': i, '交通手段': key, f'{selected_region}(%)': value, '全体(%)': all_stats.get(key, '-')})
                     st.table(pd.DataFrame(data))
                 
                 with col2:
                     st.markdown("**【県内交通】**")
                     region_stats, all_stats = transport_results['県内交通']
                     data = []
-                    for key, value in sorted(region_stats.items(), key=lambda x: x[1], reverse=True)[:8]:
-                        data.append({'交通手段': key, f'{selected_region}(%)': value, '全体(%)': all_stats.get(key, '-')})
+                    for i, (key, value) in enumerate(sorted(region_stats.items(), key=lambda x: x[1], reverse=True)[:8], 1):
+                        data.append({'順位': i, '交通手段': key, f'{selected_region}(%)': value, '全体(%)': all_stats.get(key, '-')})
                     st.table(pd.DataFrame(data))
             
             elif section == '訪問目的':
@@ -654,16 +810,16 @@ def main():
                     st.markdown("**【喫食率】**")
                     region_stats, all_stats = seafood_results['喫食率']
                     data = []
-                    for key in region_stats.keys():
-                        data.append({'海の幸': key, f'{selected_region}(%)': region_stats.get(key, '-'), '全体(%)': all_stats.get(key, '-')})
+                    for i, key in enumerate(region_stats.keys(), 1):
+                        data.append({'No': i, '海の幸': key, f'{selected_region}(%)': region_stats.get(key, '-'), '全体(%)': all_stats.get(key, '-')})
                     st.table(pd.DataFrame(data))
                 
                 with col2:
                     st.markdown("**【感動率】**")
                     region_stats, all_stats = seafood_results['感動率']
                     data = []
-                    for key in region_stats.keys():
-                        data.append({'海の幸': key, f'{selected_region}(%)': region_stats.get(key, '-'), '全体(%)': all_stats.get(key, '-')})
+                    for i, key in enumerate(region_stats.keys(), 1):
+                        data.append({'No': i, '海の幸': key, f'{selected_region}(%)': region_stats.get(key, '-'), '全体(%)': all_stats.get(key, '-')})
                     st.table(pd.DataFrame(data))
             
             elif section == '寿司・ます寿し':
@@ -677,16 +833,16 @@ def main():
                     st.markdown("**【寿司】**")
                     region_stats, all_stats = sushi_results['寿司']
                     data = []
-                    for key in region_stats.keys():
-                        data.append({'項目': key, f'{selected_region}(%)': region_stats.get(key, '-'), '全体(%)': all_stats.get(key, '-')})
+                    for i, key in enumerate(region_stats.keys(), 1):
+                        data.append({'No': i, '項目': key, f'{selected_region}(%)': region_stats.get(key, '-'), '全体(%)': all_stats.get(key, '-')})
                     st.table(pd.DataFrame(data))
                 
                 with col2:
                     st.markdown("**【ます寿し】**")
                     region_stats, all_stats = sushi_results['ます寿し']
                     data = []
-                    for key in region_stats.keys():
-                        data.append({'項目': key, f'{selected_region}(%)': region_stats.get(key, '-'), '全体(%)': all_stats.get(key, '-')})
+                    for i, key in enumerate(region_stats.keys(), 1):
+                        data.append({'No': i, '項目': key, f'{selected_region}(%)': region_stats.get(key, '-'), '全体(%)': all_stats.get(key, '-')})
                     st.table(pd.DataFrame(data))
             
             st.markdown("---")
@@ -694,13 +850,13 @@ def main():
         # PDFダウンロードボタン
         st.subheader("📥 レポートダウンロード")
         
-        pdf_content = generate_pdf_content(selected_region, selected_sections, results)
+        pdf_buffer = generate_pdf(selected_region, selected_sections, results)
         
         st.download_button(
-            label="📄 テキストレポートをダウンロード",
-            data=pdf_content.encode('utf-8'),
-            file_name=f"富山県観光レポート_{selected_region}.txt",
-            mime="text/plain"
+            label="📄 PDFレポートをダウンロード",
+            data=pdf_buffer,
+            file_name=f"富山県観光レポート_{selected_region}.pdf",
+            mime="application/pdf"
         )
 
 if __name__ == "__main__":
