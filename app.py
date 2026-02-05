@@ -123,22 +123,6 @@ REPORT_SECTIONS = {
 }
 
 # ============================================
-# ユーティリティ関数
-# ============================================
-
-def format_percent(value):
-    """パーセンテージを小数第1位でフォーマット"""
-    if isinstance(value, (int, float)):
-        return f"{value:.1f}"
-    return value
-
-def format_percent_with_symbol(value):
-    """パーセンテージを小数第1位で%付きでフォーマット"""
-    if isinstance(value, (int, float)):
-        return f"{value:.1f}%"
-    return value
-
-# ============================================
 # 分析関数
 # ============================================
 
@@ -421,7 +405,7 @@ def calc_sushi_stats(region_data, all_data):
 # ============================================
 
 def display_comparison_table(title, region_stats, all_stats, region_name):
-    """比較テーブルを表示"""
+    """比較テーブルを表示（インデックス非表示）"""
     st.subheader(title)
     
     data = []
@@ -429,7 +413,6 @@ def display_comparison_table(title, region_stats, all_stats, region_name):
         region_val = region_stats.get(key, '-')
         all_val = all_stats.get(key, '-')
         
-        # 数値の場合は小数第1位にフォーマット
         if isinstance(region_val, float):
             region_val = f"{region_val:.1f}"
         if isinstance(all_val, float):
@@ -444,17 +427,16 @@ def display_comparison_table(title, region_stats, all_stats, region_name):
     
     if data:
         df_display = pd.DataFrame(data)
-        st.table(df_display)
+        st.table(df_display.set_index('No'))
 
 def display_ranking_table(title, region_stats, all_stats, region_name, top_n=10):
-    """ランキング形式のテーブルを表示"""
+    """ランキング形式のテーブルを表示（インデックス非表示）"""
     st.subheader(title)
     
     data = []
     for i, (key, value) in enumerate(list(region_stats.items())[:top_n], 1):
         all_val = all_stats.get(key, '-')
         
-        # 小数第1位にフォーマット
         region_val_formatted = f"{value:.1f}" if isinstance(value, float) else value
         all_val_formatted = f"{all_val:.1f}" if isinstance(all_val, float) else all_val
         
@@ -467,7 +449,7 @@ def display_ranking_table(title, region_stats, all_stats, region_name, top_n=10)
     
     if data:
         df_display = pd.DataFrame(data)
-        st.table(df_display)
+        st.table(df_display.set_index('No'))
 
 # ============================================
 # PDF生成関数
@@ -539,7 +521,6 @@ def generate_pdf(region_name, selected_sections, results):
         return table
     
     def format_val(val):
-        """値を小数第1位でフォーマット"""
         if isinstance(val, float):
             return f"{val:.1f}"
         return str(val)
@@ -758,7 +739,8 @@ def main():
                             f'{selected_region}(%)': f"{value:.1f}",
                             '全体(%)': f"{all_val:.1f}" if isinstance(all_val, float) else all_val
                         })
-                    st.table(pd.DataFrame(data))
+                    df_display = pd.DataFrame(data)
+                    st.table(df_display.set_index('No'))
                 
                 with col2:
                     st.markdown("**【県内交通】**")
@@ -772,7 +754,8 @@ def main():
                             f'{selected_region}(%)': f"{value:.1f}",
                             '全体(%)': f"{all_val:.1f}" if isinstance(all_val, float) else all_val
                         })
-                    st.table(pd.DataFrame(data))
+                    df_display = pd.DataFrame(data)
+                    st.table(df_display.set_index('No'))
             
             elif section == '訪問目的':
                 region_stats, all_stats = calc_purpose_stats(df, region_data, all_data)
@@ -798,7 +781,8 @@ def main():
                             f'{selected_region}(%)': f"{value:.1f}",
                             '全体(%)': f"{all_val:.1f}" if isinstance(all_val, float) else all_val
                         })
-                    st.table(pd.DataFrame(data))
+                    df_display = pd.DataFrame(data)
+                    st.table(df_display.set_index('No'))
                 
                 with col2:
                     st.markdown("**【非デジタル】**")
@@ -812,7 +796,8 @@ def main():
                             f'{selected_region}(%)': f"{value:.1f}",
                             '全体(%)': f"{all_val:.1f}" if isinstance(all_val, float) else all_val
                         })
-                    st.table(pd.DataFrame(data))
+                    df_display = pd.DataFrame(data)
+                    st.table(df_display.set_index('No'))
             
             elif section == '訪問先':
                 region_stats, all_stats = calc_visited_stats(df, region_data, all_data)
@@ -849,7 +834,8 @@ def main():
                             f'{selected_region}(%)': f"{region_val:.1f}" if isinstance(region_val, float) else region_val,
                             '全体(%)': f"{all_val:.1f}" if isinstance(all_val, float) else all_val
                         })
-                    st.table(pd.DataFrame(data))
+                    df_display = pd.DataFrame(data)
+                    st.table(df_display.set_index('No'))
                 
                 with col2:
                     st.markdown("**【感動率】**")
@@ -864,7 +850,8 @@ def main():
                             f'{selected_region}(%)': f"{region_val:.1f}" if isinstance(region_val, float) else region_val,
                             '全体(%)': f"{all_val:.1f}" if isinstance(all_val, float) else all_val
                         })
-                    st.table(pd.DataFrame(data))
+                    df_display = pd.DataFrame(data)
+                    st.table(df_display.set_index('No'))
             
             elif section == '寿司・ます寿し':
                 sushi_results = calc_sushi_stats(region_data, all_data)
@@ -886,7 +873,8 @@ def main():
                             f'{selected_region}(%)': f"{region_val:.1f}" if isinstance(region_val, float) else region_val,
                             '全体(%)': f"{all_val:.1f}" if isinstance(all_val, float) else all_val
                         })
-                    st.table(pd.DataFrame(data))
+                    df_display = pd.DataFrame(data)
+                    st.table(df_display.set_index('No'))
                 
                 with col2:
                     st.markdown("**【ます寿し】**")
@@ -901,7 +889,8 @@ def main():
                             f'{selected_region}(%)': f"{region_val:.1f}" if isinstance(region_val, float) else region_val,
                             '全体(%)': f"{all_val:.1f}" if isinstance(all_val, float) else all_val
                         })
-                    st.table(pd.DataFrame(data))
+                    df_display = pd.DataFrame(data)
+                    st.table(df_display.set_index('No'))
             
             st.markdown("---")
         
